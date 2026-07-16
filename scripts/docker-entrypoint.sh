@@ -26,4 +26,9 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Always fix ownership of the mounted volume — Railway mounts volumes as
+# root-owned regardless of the node user's UID/GID, so we must correct this
+# every startup before dropping privileges.
+chown -R node:node /paperclip
+
 exec gosu node "$@"
