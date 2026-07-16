@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
-import { CompanyProvider } from "./context/CompanyContext";
+import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
@@ -32,10 +32,19 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
+      // Explicit so cross-tab-published cache entries for resources this tab
+      // isn't observing get collected promptly rather than lingering. Single
+      // tuning point if we need to trim the cache footprint further.
+      gcTime: 5 * 60_000,
       refetchOnWindowFocus: true,
     },
   },
 });
+
+function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
+  const { selectedCompany } = useCompany();
+  return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -47,7 +56,7 @@ createRoot(document.getElementById("root")!).render(
               <ToastProvider>
                 <LiveUpdatesProvider>
                   <TooltipProvider>
-                    <BreadcrumbProvider>
+                    <CompanyAwareBreadcrumbProvider>
                       <SidebarProvider>
                         <PanelProvider>
                           <PluginLauncherProvider>
@@ -57,7 +66,7 @@ createRoot(document.getElementById("root")!).render(
                           </PluginLauncherProvider>
                         </PanelProvider>
                       </SidebarProvider>
-                    </BreadcrumbProvider>
+                    </CompanyAwareBreadcrumbProvider>
                   </TooltipProvider>
                 </LiveUpdatesProvider>
               </ToastProvider>

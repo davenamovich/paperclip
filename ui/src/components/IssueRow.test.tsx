@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +29,15 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function act(callback: () => void) {
+  if (typeof reactAct === "function") {
+    reactAct(callback);
+    return;
+  }
+
+  flushSync(callback);
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -43,6 +53,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -68,6 +79,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastExternalCommentAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -81,6 +93,25 @@ describe("IssueRow", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("renders the list status glyph at md (16px)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
+    });
+
+    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    expect(glyphs.length).toBeGreaterThan(0);
+    glyphs.forEach((glyph) => {
+      expect(glyph.getAttribute("width")).toBe("16");
+      expect(glyph.getAttribute("height")).toBe("16");
+    });
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("suppresses accent hover styling when the row is selected", () => {
@@ -110,7 +141,10 @@ describe("IssueRow", () => {
 
     const markReadButton = container.querySelector('button[aria-label="Mark as read"]');
     const unreadDot = markReadButton?.querySelector("span");
-    const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
+    // Selected rows neutralize the status glyph to muted via `!`-important
+    // utilities, which override the glyph's inline colour var. The glyph is an
+    // <svg> (SVGAnimatedString className), so match on the class attribute.
+    const statusGlyph = container.querySelector('svg[class*="text-muted-foreground"]');
 
     expect(markReadButton).not.toBeNull();
     expect(markReadButton?.className).toContain("hover:bg-muted/80");
@@ -118,9 +152,9 @@ describe("IssueRow", () => {
     expect(unreadDot).not.toBeNull();
     expect(unreadDot?.className).toContain("bg-muted-foreground/70");
     expect(unreadDot?.className).not.toContain("bg-blue-600");
-    expect(statusIcon).not.toBeNull();
-    expect(statusIcon?.className).toContain("!border-muted-foreground");
-    expect(statusIcon?.className).toContain("!text-muted-foreground");
+    expect(statusGlyph).not.toBeNull();
+    expect(statusGlyph?.getAttribute("class")).toContain("!text-muted-foreground");
+    expect(statusGlyph?.getAttribute("class")).toContain("!border-muted-foreground");
 
     act(() => {
       root.unmount();
@@ -227,6 +261,47 @@ describe("IssueRow", () => {
     });
   });
 
+  it("marks the current checklist step without adding a left border", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          checklistCurrentStep
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("aria-current")).toBe("step");
+    expect(link?.className).toContain("bg-primary/5");
+    expect(link?.className).not.toContain("border-l-");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not render a planning mode marker for planning work mode issues", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ workMode: "planning" })} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.textContent).not.toContain("Planning");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders without error when titleSuffix is omitted", () => {
     const root = createRoot(container);
 
@@ -236,6 +311,62 @@ describe("IssueRow", () => {
 
     const titleEl = container.querySelector(".line-clamp-2, .truncate");
     expect(titleEl?.textContent).toContain("Inbox item");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("flags rows blocked by an assigned-backlog leaf with a parked-work badge", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Parked child",
+          status: "backlog",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-parked-blocker"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("Blocked by parked work");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the parked-work badge when assigned blocker is not in backlog", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Active child",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    expect(container.querySelector('[data-testid="issue-row-parked-blocker"]')).toBeNull();
 
     act(() => {
       root.unmount();
